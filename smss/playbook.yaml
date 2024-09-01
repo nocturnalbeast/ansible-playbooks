@@ -1,0 +1,258 @@
+- name: The setup monitoring and servicing server (SMSS) setup playbook
+  hosts: myhosts
+  become: true
+  tasks:
+    - name: Install custom certificate | Make sure certificates folder exists
+      file:
+        path: /usr/local/share/ca-certificates
+        state: directory
+
+    - name: Install custom certificate | Download root certificate
+      get_url:
+        url: "{{ custom_cert_url }}"
+        dest: "/usr/local/share/ca-certificates/custom.crt"
+        validate_certs: false
+      register: download_cert_result
+
+    - name: Install custom certificate | Update trust store
+      shell: update-ca-certificates
+      when: download_cert_result is changed
+
+    - name: Freshen system | Install aptitude
+      apt:
+        name: aptitude
+        state: latest
+        update_cache: true
+
+    - name: Freshen system | Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Freshen system | Upgrade all apt packages
+      apt:
+        upgrade: yes
+        autoremove: yes
+        autoclean: yes
+
+    - name: Purge snapd | Remove snapd directory in home folder
+      file:
+        path: /home/secuser/snap
+        state: absent
+
+    - name: Purge snapd | Remove snapd directory in /var
+      file:
+        path: /var/cache/snapd
+        state: absent
+
+    - name: Purge snapd | Remove snapd package
+      apt:
+        name: snapd
+        state: absent
+        autoremove: yes
+      register: snapd_remove_result
+
+    - name: Purge snapd | Hold snapd package
+      dpkg_selections:
+        name: snapd
+        selection: hold
+      when: snapd_remove_result is changed
+
+    - name: Handle prerequisites |  Install required system packages
+      apt:
+        pkg:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - python3-pip
+          - virtualenv
+          - python3-setuptools
+          - snmp
+          - snmpd
+        state: latest
+        update_cache: true
+
+    - name: Handle prerequisites | Add Docker GPG apt Key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Handle prerequisites | Add Docker Repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu noble stable
+        state: present
+
+    - name: Handle prerequisites | Update apt and install docker-ce
+      apt:
+        name: docker-ce
+        state: latest
+        update_cache: true
+
+    - name: Handle prerequisites | Install Docker Module for Python
+      pip:
+        break_system_packages: true
+        name: docker
+
+    - name: Handle prerequisites | Ensure Docker is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Handle prerequisites | Run Hello World
+      shell: sudo docker run hello-world
+      register: docker_run
+
+    - debug:
+        var: docker_run.stdout_lines
+
+    - name: Install Jenkins | Create Jenkins home directory on host
+      file:
+        path: /opt/jenkins_home
+        state: directory
+        mode: "0777"
+
+    - name: Install Jenkins | Pull Jenkins Docker image
+      docker_image:
+        name: jenkins/jenkins
+        tag: lts
+        source: pull
+
+    - name: Install Jenkins | Run Jenkins container
+      docker_container:
+        name: jenkins
+        image: jenkins/jenkins:lts
+        state: started
+        restart_policy: on-failure
+        ports:
+          - "8080:8080"
+          - "50000:50000"
+        volumes:
+          - /opt/jenkins_home:/var/jenkins_home
+
+    - name: Install MariaDB | Create MariaDB data directory on host
+      file:
+        path: /opt/mariadb_data
+        state: directory
+        mode: "0777"
+
+    - name: Install MariaDB | Pull mariadb Docker image
+      docker_image:
+        name: mariadb
+        tag: latest
+        source: pull
+
+    - name: Install MariaDB | Run mariadb container
+      docker_container:
+        name: mariadb
+        image: mariadb:latest
+        state: started
+        restart_policy: on-failure
+        ports:
+          - "3306:3306"
+        volumes:
+          - /opt/mariadb_data:/var/lib/mysql
+        env:
+          MARIADB_ROOT_PASSWORD: "{{ db_root_password }}"
+
+    - name: Install LibreNMS | Create LibreNMS data directory on host
+      file:
+        path: /opt/librenms_data
+        state: directory
+        mode: "0777"
+
+    - name: Install LibreNMS | Pull LibreNMS Docker image
+      docker_image:
+        name: librenms/librenms
+        tag: latest
+        source: pull
+
+    - name: Install LibreNMS | Run LibreNMS container
+      docker_container:
+        name: librenms
+        image: librenms/librenms:latest
+        state: started
+        restart_policy: on-failure
+        ports:
+          - "8000:8000"
+        volumes:
+          - /opt/librenms_data:/var/lib/librenms
+        env:
+          DB_HOST: "localhost"
+          DB_PORT: "3306"
+          DB_PASSWORD: "{{ db_root_password }}"
+
+    - name: Install Gitea | Create Gitea data directory on host
+      file:
+        path: /opt/gitea_data
+        state: directory
+        mode: "0777"
+
+    - name: Install Gitea | Create Gitea config directory on host
+      file:
+        path: /opt/gitea_config
+        state: directory
+        mode: "0777"
+
+    - name: Install Gitea | Pull Gitea Docker image
+      docker_image:
+        name: gitea/gitea
+        tag: latest
+        source: pull
+
+    - name: Install Gitea | Run Gitea container
+      docker_container:
+        name: gitea
+        image: gitea/gitea:latest
+        state: started
+        restart_policy: on-failure
+        ports:
+          - "3000:3000"
+          - "2222:2222"
+        volumes:
+          - /opt/gitea_data:/var/lib/gitea
+          - /opt/gitea_config:/etc/gitea
+          - /etc/timezone:/etc/timezone:ro
+          - /etc/localtime:/etc/localtime:ro
+
+    - name: Install Stirling PDF tools | Create log directory on host
+      file:
+        path: /opt/stirlingpdf/logs
+        state: directory
+        mode: "0777"
+
+    - name: Install Stirling PDF tools | Create training data directory on host
+      file:
+        path: /opt/stirlingpdf/training_data
+        state: directory
+        mode: "0777"
+
+    - name: Install Stirling PDF tools | Create extra configs directory on host
+      file:
+        path: /opt/stirlingpdf/extra_configs
+        state: directory
+        mode: "0777"
+
+    - name: Install Stirling PDF tools | Pull Stirling PDF tools Docker image
+      docker_image:
+        name: frooodle/s-pdf
+        tag: latest
+        source: pull
+
+    - name: Install Stirling PDF tools | Run Stirling PDF tools container
+      docker_container:
+        name: stirling-pdf
+        image: frooodle/s-pdf:latest
+        state: started
+        restart_policy: on-failure
+        ports:
+          - "8080:2000"
+        volumes:
+          - /opt/stirlingpdf/logs:/logs
+          - /opt/stirlingpdf/training_data:/usr/share/tessdata
+          - /opt/stirlingpdf/extra_configs:/configs
+        env:
+          DOCKER_ENABLE_SECURITY: true
+          SECURITY_ENABLELOGIN: true
+          INSTALL_BOOK_AND_ADVANCED_HTML_OPS: false
+          LANGS: en_US
